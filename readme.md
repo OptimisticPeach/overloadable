@@ -5,12 +5,19 @@ Easy to use overloadable functions in rust using nightly features.
 This crate provides you with the capabilities to overload your functions in a similar style to C# or C++, including support for meta attributes, type parameters and constraints, and visibility modifiers. 
 Please visit the documentation for futher information. 
 
+# Note
+This is a **nightly** crate. You _must_ include the following line in your code for this crate to compile:
+```rust
+#![feature(unboxed_closures, fn_traits)]
+```
+
 ## Example:
 
 ```rust
-use overloadable::overloadable;
+#![feature(unboxed_closures, fn_traits)]
+use overloadable::overload;
 
-overloadable! {
+overload! {
     pub func as
     #[inline(always)]
     fn(x: usize, y: usize) -> usize {

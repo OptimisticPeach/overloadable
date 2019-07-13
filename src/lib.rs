@@ -5,8 +5,8 @@
   # Syntax:
 
   ```no_run
-  use overloadable::overloadable;
-  overloadable!{
+  use overloadable::overload;
+  overload!{
       #[my_meta]
       visibility function_name as
       fn<OptionalTypeArgs>(function_params: function_types) -> optional_return_type where [OptionalTypeArgs: constraints] {
@@ -19,9 +19,9 @@
 
   Here is an example of the output produced by `overloadable`:
   ```
-  use overloadable::overloadable;
+  use overloadable::overload;
   use std::fmt::Debug;
-  overloadable!{
+  overload!{
       pub my_func as
       fn(x: usize, y: &str) -> f32 {
           (x * y.len()) as f32
@@ -60,7 +60,7 @@
 
 #![feature(unboxed_closures, fn_traits)]
 #[macro_export]
-macro_rules! overloadable {
+macro_rules! overload {
     ($v:vis $name:ident as
     $(
         $(#[$($m:tt)*])*
@@ -108,7 +108,7 @@ macro_rules! overloadable {
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
-    overloadable! {
+    overload! {
         pub(self) func_name as
         #[inline(always)]
         fn(x: usize, y: &str) -> f32 {
