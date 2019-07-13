@@ -1,11 +1,12 @@
 [package]
 name = "overloadable"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["OptimisticPeach <optimistic.peach@outlook.com>"]
 edition = "2018"
 description = "Overloadable functions done easy in rust."
 repository = "https://github.com/OptimisticPeach/overloadable.git"
 keywords = ["function", "overloadable", "overwrite", "overload"]
 license = "MIT"
+readme = "readme.md"
 
 [dependencies]
