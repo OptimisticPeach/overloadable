@@ -17,7 +17,7 @@ This is a **nightly** crate. You _must_ include the following line in your code 
 #![feature(unboxed_closures, fn_traits)]
 use overloadable::overload;
 
-overload! {
+overloadable! {
     pub func as
     #[inline(always)]
     fn(x: usize, y: usize) -> usize {
