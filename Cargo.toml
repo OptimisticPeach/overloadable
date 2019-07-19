@@ -1,6 +1,6 @@
 [package]
 name = "overloadable"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["OptimisticPeach <optimistic.peach@outlook.com>"]
 edition = "2018"
 description = "Overloadable functions done easy in rust."
@@ -9,4 +9,10 @@ keywords = ["function", "overloadable", "overwrite", "overload"]
 license = "MIT"
 readme = "readme.md"
 
+[lib]
+proc-macro = true
+
 [dependencies]
+syn = { version = "0.15.39", features = ["full"] }
+quote = "0.6"
+proc-macro2 = { version = "0.4", features = ["nightly"] }

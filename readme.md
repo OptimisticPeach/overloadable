@@ -23,10 +23,10 @@ overload! {
     fn(x: usize, y: usize) -> usize {
         x * y
     }
-    fn<'a,>(x: &'a usize) -> f32 {
+    fn<'a>(x: &'a usize) -> f32 {
         *x as f32
     }
-    fn<'a, T>(x: &'a [T]) -> &'a T where [T: std::fmt::Debug] {
+    fn<'a, T>(x: &'a [T]) -> &'a T where T: std::fmt::Debug {
         println!("Found {:?}", &x[0]);
         &x[0]
     }
