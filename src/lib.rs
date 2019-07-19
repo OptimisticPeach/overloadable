@@ -26,7 +26,7 @@
       pub my_func as
       fn(x: usize, y: &str) -> f32 {
           (x * y.len()) as f32
-      }
+      },
       fn<T>() where T: Debug {}
   }
   //Gives
