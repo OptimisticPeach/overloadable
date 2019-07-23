@@ -15,7 +15,7 @@ This is a **nightly** crate. You _must_ include the following line in your code 
 
 ```rust
 #![feature(unboxed_closures, fn_traits)]
-use overloadable::overload;
+use overloadable::overloadable;
 
 overloadable! {
     pub func as
@@ -32,9 +32,9 @@ overloadable! {
     }
 }
 
-fn foo {
+fn foo() {
     assert_eq!(func(2, 3), 6);
     assert_eq!(func(&32), 32.0);
-    assert_eq!(func(&[1, 2, 3, 4] as &[usize]), &0);
+    assert_eq!(func(&[1, 2, 3, 4][..]), &0);
 }
 ```
