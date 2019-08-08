@@ -3,15 +3,15 @@
   the use of a macro.
   # Syntax:
   ```ignore
+  # #![feature(fn_traits, unboxed_closures, proc_macro_hygiene)]
   # struct function_types;
   # struct optional_return_type;
   # trait constraints {}
   # const code_body: () = ();
-
   use overloadable::overloadable;
   overloadable!{
-      #[doc = "Some meta attributes."]
       pub function_name as
+      #[doc = "Some meta attributes."]
       fn<OptionalTypeArgs>(function_params: function_types) -> optional_return_type where OptionalTypeArgs: constraints {
           code_body
       }
@@ -20,6 +20,7 @@
   # What is produced
   Here is an example of the output produced by `overloadable`:
   ```ignore
+  # #![feature(fn_traits, unboxed_closures)]
   use overloadable::overloadable;
   use std::fmt::Debug;
   overloadable!{
@@ -31,7 +32,7 @@
   }
   //Gives
   #[allow(non_camel_case_types)]
-  pub struct my_func;
+  pub struct my_func_;
   impl Fn<(usize, &str,)> for my_func {
       extern "rust-call" fn call(&self, (x, y,): (usize, &str,)) -> f32 {
           {
@@ -47,10 +48,13 @@
   }
   //The rest of the `Fn*` family.
   ```
+
+  Note that you cannot have functions with unused generic parameters due to the
+  trait-implementing nature of this method.
 */
 extern crate proc_macro;
 use self::proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as Tok2};
+use proc_macro2::TokenStream as Tok2;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
     bracketed,
@@ -383,6 +387,27 @@ fn gen_trait_fn_decls<T: IntoIterator<Item = ParsedFnDef>>(
 /// Overloadable function macro. Please read the top level documentation for this crate
 /// for more information on this.
 ///
+/// ## Example:
+/// ```
+/// # #![feature(fn_traits, unboxed_closures, proc_macro_hygiene)]
+/// # use std::fmt::{Debug, Display};
+/// overloadable::overloadable! {
+///     my_func as
+///     fn(x: usize) -> usize {
+///         x * 2
+///     },
+///     fn(x: &str) -> usize {
+///         x.len()
+///     },
+///     fn<T: Debug>(x: T, y: T) -> String where T: Display {
+///         format!("{:?}, {}", x, y)
+///     },
+///     fn<T: Debug + Display>((x, y): (T, T)) -> String {
+///         my_func(x, y)
+///     },
+/// }
+/// ```
+///
 #[proc_macro]
 pub fn overloadable(input: TokenStream) -> TokenStream {
     let OverloadableGlobal { vis, name, fns, .. } = parse_macro_input!(input as OverloadableGlobal);
@@ -403,8 +428,29 @@ pub fn overloadable(input: TokenStream) -> TokenStream {
 }
 
 ///
-/// Overloadable function macro. Please read the top level documentation for this crate
-/// for more information on this.
+/// Overloadable function macro for members. This allows you to have overloadable methods
+/// and associated functions.
+///
+/// This has similar syntax to that of `overloadable`, except that it differs in that
+/// the function name must be preceded by `StructName::`, for example:
+///
+/// ```
+/// # #![feature(fn_traits, unboxed_closures, proc_macro_hygiene)]
+/// struct Foo;
+/// overloadable::overloadable_member!{
+///     Foo::func_name as
+///     fn() {},
+///     fn(self) {},
+///     fn(mut self, x: isize) {},
+///     fn(&self, y: usize) {},
+///     fn(self: Box<Self>, z: &str) {}
+/// }
+/// ```
+///
+/// ** NOTE **
+/// This is internally implemented using custom traits, so to have this functionality
+/// carry over, you must use a `use my_mod::*` to import all of the traits defined by
+/// this macro.
 ///
 #[proc_macro]
 pub fn overloadable_member(input: TokenStream) -> TokenStream {
@@ -417,27 +463,29 @@ pub fn overloadable_member(input: TokenStream) -> TokenStream {
     } = parse_macro_input!(input as OverloadableAssociated);
     let struct_name = &struct_name;
     let name = &name;
-    let mod_name = Ident::new(&format!("ModForImplsOf{}", struct_name), struct_name.span());
     let (with_self, without_self) = split_self(fns);
-    let (in_mod_without_self, out_mod_without_self) = if without_self.len() > 0 {
-        let fn_impls: Tok2 =
-            gen_fn_decls(without_self, &Ident::new("HiddenStruct", Span::call_site())).unwrap();
+    let without_self_impl = if without_self.len() > 0 {
+        let hidden_name = Ident::new(&format!("{}HiddenStruct", struct_name), struct_name.span());
+        let fn_impls: Tok2 = gen_fn_decls(without_self, &hidden_name).unwrap();
+        let trait_name = Ident::new(&format!("ImplNonSelf{}", struct_name), struct_name.span());
         let struct_def = quote! {
                 #[allow(dead_code)]
-                #vis struct HiddenStruct;
+                #[allow(non_camel_case_types)]
+                #vis struct #hidden_name;
                 #fn_impls
         };
-        let trait_name = Ident::new(&format!("ImplNonSelf{}", struct_name), struct_name.span());
         let trait_def = quote_spanned!(name.span() =>
             #vis trait #trait_name {
                 #[allow(non_upper_case_globals)]
-                const #name: #mod_name::HiddenStruct = #mod_name::HiddenStruct;
+                const #name: #hidden_name = #hidden_name;
             }
             impl #trait_name for #struct_name {}
         );
-        (struct_def, trait_def)
+        quote!(
+            #struct_def #trait_def
+        )
     } else {
-        (quote!(), quote!())
+        quote!()
     };
     let with_self_impl = if with_self.len() > 0 {
         gen_trait_fn_decls(with_self, name, struct_name, &vis).unwrap()
@@ -445,31 +493,8 @@ pub fn overloadable_member(input: TokenStream) -> TokenStream {
         quote!()
     };
     let expanded = quote! {
-        #[allow(non_snake_case)]
-        mod #mod_name {
-            use super::*;
-            #in_mod_without_self
-        }
-        #out_mod_without_self
+        #without_self_impl
         #with_self_impl
     };
     TokenStream::from(expanded)
 }
-
-/*
-Example code:
-```
-//Standalone function
-overloadable! {
-    func_name as
-    fn(foo) -> bar { quux };
-    fn(bar) -> foo { quux };
-}
-//Associated function
-overloadable_member! {
-    StructName::func_name as
-    fn(foo) -> bar { quux },
-    fn(&self) -> bar { quux },
-}
-```
-*/
