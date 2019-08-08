@@ -22,3 +22,18 @@ fn it_works() {
         assert_eq!(b, "abc");
     }
 }
+
+pub struct Foo;
+
+overloadable::overloadable_member! {
+    pub Foo::func_name as
+    fn(_: usize) {},
+    fn<T>((x, y): (T, usize)) -> String where T: Debug {
+        format!("{:?}, {:?}", x, y)
+    },
+    #[no_mangle]
+    fn<'a, 'b: 'a>(self, a: &mut &'a str, b: &'a str) {
+        *a = &b[..]
+    },
+    fn(&self) -> usize {1}
+}

@@ -50,29 +50,38 @@
 */
 extern crate proc_macro;
 use self::proc_macro::TokenStream;
-use proc_macro2::TokenStream as Tok2;
-use quote::{quote, quote_spanned};
-use syn::parse::{Parse, ParseStream, Result};
-use syn::punctuated::Punctuated;
+use proc_macro2::{Span, TokenStream as Tok2};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::{
-    bracketed, parenthesized, parse_macro_input,
+    bracketed,
+    parenthesized,
+    parse::{Parse, ParseStream, Result},
+    parse_macro_input,
+    punctuated::Punctuated,
+    spanned::Spanned,
     token::{Bracket, Paren},
-    Block, Generics, Ident, Meta, Pat,
-    ReturnType, Token, Type, TypeTuple, Visibility, WhereClause,
+    Block,
+    Error,
+    Generics,
+    Ident,
+    Meta,
+    Pat,
+    ReturnType,
+    Token,
+    Type,
+    TypeTuple,
+    Visibility,
+    WhereClause,
 };
 
-///
-/// Overloadable function macro. Please read the top level documentation for this crate
-/// for more information on this.
-///
-struct Overloadable {
+struct OverloadableGlobal {
     vis: Visibility,
     name: Ident,
     _as_keyword: Token![as],
     fns: Punctuated<ParsedFnDef, Token![,]>,
 }
 
-impl Parse for Overloadable {
+impl Parse for OverloadableGlobal {
     fn parse(input: ParseStream) -> Result<Self> {
         Ok(Self {
             vis: input.parse()?,
@@ -83,11 +92,103 @@ impl Parse for Overloadable {
     }
 }
 
+struct OverloadableAssociated {
+    vis: Visibility,
+    struct_name: Ident,
+    _colons: Token![::],
+    name: Ident,
+    _as: Token![as],
+    fns: Punctuated<ParsedFnDef, Token![,]>,
+}
+
+impl Parse for OverloadableAssociated {
+    fn parse(input: ParseStream) -> Result<Self> {
+        Ok(Self {
+            vis: input.parse()?,
+            struct_name: input.parse()?,
+            _colons: input.parse()?,
+            name: input.parse()?,
+            _as: input.parse()?,
+            fns: input.parse_terminated(ParsedFnDef::parse)?,
+        })
+    }
+}
+
+enum ThisDef {
+    Explicit(
+        Option<Token![mut]>,
+        Token![self],
+        Token![:],
+        Type,
+        Option<Token![,]>,
+    ),
+    Implicit(
+        Option<Token![&]>,
+        Option<Token![mut]>,
+        Token![self],
+        Option<Token![,]>,
+    ),
+}
+
+impl Parse for ThisDef {
+    fn parse(input: ParseStream) -> Result<Self> {
+        if (input.peek2(Token![:]) || input.peek3(Token![:]))
+            && (input.peek(Token![self]) || input.peek2(Token![self]))
+        {
+            //Explicit route
+            let mutable = if input.peek(Token![mut]) {
+                Some(input.parse::<Token![mut]>()?)
+            } else {
+                None
+            };
+            let this = input.parse::<Token![self]>()?;
+            Ok(ThisDef::Explicit(
+                mutable,
+                this,
+                input.parse()?,
+                input.parse()?,
+                input.parse()?,
+            ))
+        } else if input.peek(Token![self]) || input.peek2(Token![self]) || input.peek3(Token![self])
+        {
+            Ok(ThisDef::Implicit(
+                input.parse()?,
+                input.parse()?,
+                input.parse()?,
+                input.parse()?,
+            ))
+        } else {
+            Err(input.error("Could not find self type!"))
+        }
+    }
+}
+
+impl ToTokens for ThisDef {
+    fn to_tokens(&self, tokens: &mut Tok2) {
+        match self {
+            ThisDef::Explicit(mut_def, self_def, colon, ty, comma) => {
+                mut_def.to_tokens(tokens);
+                self_def.to_tokens(tokens);
+                colon.to_tokens(tokens);
+                ty.to_tokens(tokens);
+                comma.to_tokens(tokens);
+            }
+            ThisDef::Implicit(and, mut_def, self_def, comma) => {
+                and.to_tokens(tokens);
+                mut_def.to_tokens(tokens);
+                self_def.to_tokens(tokens);
+                comma.to_tokens(tokens);
+            }
+        }
+    }
+}
+
 struct ParsedFnDef {
     meta: Vec<(Meta, Bracket)>,
     _func: Token![fn],
     gen: Option<Generics>,
     paren: Paren,
+    this: Option<ThisDef>,
     params: Punctuated<(Pat, Token![:], Type), Token![,]>,
     ret: ReturnType,
     w_clause: Option<WhereClause>,
@@ -115,6 +216,7 @@ impl Parse for ParsedFnDef {
         };
         let params_content;
         let paren = parenthesized!(params_content in input);
+        let this = params_content.parse::<ThisDef>().ok();
         let params = params_content.parse_terminated(parse_pattern_type_pair)?;
         let ret = input.parse()?;
         let w_clause = if input.peek(Token![where]) {
@@ -128,6 +230,7 @@ impl Parse for ParsedFnDef {
             _func,
             gen,
             paren,
+            this,
             params,
             ret,
             w_clause,
@@ -136,38 +239,46 @@ impl Parse for ParsedFnDef {
     }
 }
 
-#[proc_macro]
-pub fn overloadable(input: TokenStream) -> TokenStream {
-    let Overloadable { vis, name, fns, .. } = parse_macro_input!(input as Overloadable);
-    let name = &name;
-    let struct_decl = quote_spanned! { name.span() =>
-        #[allow(non_camel_case_types)]
-        #[allow(dead_code)]
-        #vis struct #name;
-    };
-    let fn_decls: Vec<Tok2> = fns.iter().map(
+fn split_self(
+    x: Punctuated<ParsedFnDef, Token![,]>,
+) -> (
+    Punctuated<ParsedFnDef, Token![,]>,
+    Punctuated<ParsedFnDef, Token![,]>,
+) {
+    x.into_iter().partition(|x| x.this.is_some())
+}
+
+fn gen_fn_decls<T: IntoIterator<Item = ParsedFnDef>>(fns: T, name: &Ident) -> Result<Tok2> {
+    let fns: Vec<Tok2> = fns.into_iter().map(
         |ParsedFnDef {
-            gen,
-            params,
-            ret,
-            w_clause,
-            code,
-            paren,
-            meta,
-            ..
-         }| {
+             gen,
+             params,
+             ret,
+             w_clause,
+             code,
+             paren,
+             meta,
+             this,
+             ..
+        }| {
+            if this.is_some() {
+                return Err(Error::new(paren.span, "This declaration cannot contain a `self`-style parameter."));
+            }
             let ret = match ret {
                 ReturnType::Type(_, ty) => *ty.clone(),
-                ReturnType::Default => Type::Tuple(TypeTuple {paren_token: *paren, elems: Punctuated::new()}),
+                ReturnType::Default => Type::Tuple(TypeTuple { paren_token: paren, elems: Punctuated::new() }),
             };
             let mut param_types = Vec::new();
             let mut param_patterns = Vec::new();
-            params.iter().for_each(|(pat, _, ty)| {param_types.push(ty); param_patterns.push(pat)});
+            params.iter().for_each(|(pat, _, ty)| {
+                param_types.push(ty);
+                param_patterns.push(pat)
+            });
             let pty = &param_types[..];
             let ppt = &param_patterns[..];
             let meta: Vec<Tok2> = meta.iter().map(|(m, b)| quote_spanned!(b.span => #[#m])).collect();
             let meta = &meta[..];
-            quote!(
+            Ok(quote!(
                 impl#gen Fn<(#(#pty,)*)> for #name #w_clause {
                     #(#meta)*
                     extern "rust-call" fn call(&self, (#(#ppt,)*): (#(#pty,)*)) -> Self::Output {
@@ -187,9 +298,102 @@ pub fn overloadable(input: TokenStream) -> TokenStream {
                         self.call(x)
                     }
                 }
-            )
+            ))
         }
-    ).collect();
+    ).collect::<Result<Vec<Tok2>>>()?;
+    Ok(quote!(
+        #(#fns)*
+    ))
+}
+
+fn gen_trait_fn_decls<T: IntoIterator<Item = ParsedFnDef>>(
+    fns: T,
+    name: &Ident,
+    struct_name: &Ident,
+    vis: &Visibility,
+) -> Result<Tok2> {
+    let fns: Vec<Tok2> = fns
+        .into_iter()
+        .enumerate()
+        .map(
+            |(
+                index,
+                ParsedFnDef {
+                    gen,
+                    params,
+                    ret,
+                    w_clause,
+                    code,
+                    paren,
+                    meta,
+                    this,
+                    ..
+                },
+            )| {
+                if this.is_none() {
+                    return Err(Error::new(
+                        paren.span,
+                        "This declaration requires a `self`-style parameter.",
+                    ));
+                }
+                let ret = match ret {
+                    ReturnType::Type(_, ty) => *ty.clone(),
+                    ReturnType::Default => Type::Tuple(TypeTuple {
+                        paren_token: paren,
+                        elems: Punctuated::new(),
+                    }),
+                };
+                let mut trait_params = Vec::with_capacity(params.len());
+                let mut impl_params = Vec::with_capacity(params.len());
+                for (index, (lhs, _, rhs)) in params.iter().enumerate() {
+                    let next_ident = Ident::new(&format!("_{}", index), lhs.span());
+                    trait_params.push(quote!(#next_ident: #rhs));
+                    impl_params.push(quote!(#lhs: #rhs));
+                }
+                let meta: Vec<Tok2> = meta
+                    .iter()
+                    .map(|(m, b)| quote_spanned!(b.span => #[#m]))
+                    .collect();
+                let meta = &meta[..];
+                let trait_name = Ident::new(
+                    &format!("{}Trait{}", struct_name, index),
+                    struct_name.span(),
+                );
+                Ok(quote!(
+                    #vis trait #trait_name {
+                        fn #name#gen(#this#(#trait_params),*) -> #ret #w_clause;
+                    }
+                    impl #trait_name for #struct_name {
+                        #(#meta)*
+                        fn #name#gen(#this#(#impl_params),*) -> #ret #w_clause {
+                            #code
+                        }
+                    }
+                ))
+            },
+        )
+        .collect::<Result<Vec<Tok2>>>()?;
+
+    Ok(quote!(
+        #(#fns)*
+    ))
+}
+
+///
+/// Overloadable function macro. Please read the top level documentation for this crate
+/// for more information on this.
+///
+#[proc_macro]
+pub fn overloadable(input: TokenStream) -> TokenStream {
+    let OverloadableGlobal { vis, name, fns, .. } = parse_macro_input!(input as OverloadableGlobal);
+    let name = &name;
+    let struct_decl = quote_spanned! { name.span() =>
+        #[doc(hidden)]
+        #[allow(non_camel_case_types)]
+        #[allow(dead_code)]
+        #vis struct #name;
+    };
+    let fn_decls = gen_fn_decls(fns, name).unwrap();
 
     let expanded = quote! {
         #struct_decl
@@ -197,3 +401,75 @@ pub fn overloadable(input: TokenStream) -> TokenStream {
     };
     TokenStream::from(expanded)
 }
+
+///
+/// Overloadable function macro. Please read the top level documentation for this crate
+/// for more information on this.
+///
+#[proc_macro]
+pub fn overloadable_member(input: TokenStream) -> TokenStream {
+    let OverloadableAssociated {
+        vis,
+        struct_name,
+        name,
+        fns,
+        ..
+    } = parse_macro_input!(input as OverloadableAssociated);
+    let struct_name = &struct_name;
+    let name = &name;
+    let mod_name = Ident::new(&format!("ModForImplsOf{}", struct_name), struct_name.span());
+    let (with_self, without_self) = split_self(fns);
+    let (in_mod_without_self, out_mod_without_self) = if without_self.len() > 0 {
+        let fn_impls: Tok2 =
+            gen_fn_decls(without_self, &Ident::new("HiddenStruct", Span::call_site())).unwrap();
+        let struct_def = quote! {
+                #[allow(dead_code)]
+                #vis struct HiddenStruct;
+                #fn_impls
+        };
+        let trait_name = Ident::new(&format!("ImplNonSelf{}", struct_name), struct_name.span());
+        let trait_def = quote_spanned!(name.span() =>
+            #vis trait #trait_name {
+                #[allow(non_upper_case_globals)]
+                const #name: #mod_name::HiddenStruct = #mod_name::HiddenStruct;
+            }
+            impl #trait_name for #struct_name {}
+        );
+        (struct_def, trait_def)
+    } else {
+        (quote!(), quote!())
+    };
+    let with_self_impl = if with_self.len() > 0 {
+        gen_trait_fn_decls(with_self, name, struct_name, &vis).unwrap()
+    } else {
+        quote!()
+    };
+    let expanded = quote! {
+        #[allow(non_snake_case)]
+        mod #mod_name {
+            use super::*;
+            #in_mod_without_self
+        }
+        #out_mod_without_self
+        #with_self_impl
+    };
+    TokenStream::from(expanded)
+}
+
+/*
+Example code:
+```
+//Standalone function
+overloadable! {
+    func_name as
+    fn(foo) -> bar { quux };
+    fn(bar) -> foo { quux };
+}
+//Associated function
+overloadable_member! {
+    StructName::func_name as
+    fn(foo) -> bar { quux },
+    fn(&self) -> bar { quux },
+}
+```
+*/
