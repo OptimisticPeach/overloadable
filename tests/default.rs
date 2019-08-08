@@ -23,10 +23,10 @@ fn it_works() {
     }
 }
 
-pub struct Foo;
+pub struct Foo1;
 
 overloadable::overloadable_member! {
-    pub Foo::func_name as
+    pub Foo1::func_name as
     fn(_: usize) {},
     fn<T>((x, y): (T, usize)) -> String where T: Debug {
         format!("{:?}, {:?}", x, y)
@@ -36,4 +36,35 @@ overloadable::overloadable_member! {
         *a = &b[..]
     },
     fn(&self) -> usize {1}
+}
+
+//Forum example:
+#[derive(Clone)]
+enum Foo {
+    A,
+    B,
+}
+overloadable::overloadable_member! {
+    Foo::my_func as
+    fn(&self) -> &'static str {
+        match self {
+           Foo::A => "A",
+           Foo::B => "B",
+        }
+    },
+    fn(self, x: usize) -> Vec<Self> {
+        let mut val = Vec::new();
+        val.resize_with(x, || self.clone());
+        val
+    },
+    fn() -> Box<Self> {
+        Box::new(Foo::A)
+    },
+    fn(self: Box<Self>, other: Box<Self>) -> usize {
+        match (&*self, &*other) {
+            (Foo::A, Foo::A) => 2,
+            (Foo::B, Foo::A) | (Foo::A, Foo::B) => 1,
+            _ => 0
+        }
+    }
 }

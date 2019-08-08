@@ -187,6 +187,13 @@ impl ToTokens for ThisDef {
     }
 }
 
+impl ThisDef {
+    pub fn is_sized_dependent(this: &Option<Self>) -> bool {
+        if let Some(ThisDef::Implicit(None, ..)) = this { true }
+        else { false }
+    }
+}
+
 struct ParsedFnDef {
     meta: Vec<(Meta, Bracket)>,
     _func: Token![fn],
@@ -241,15 +248,6 @@ impl Parse for ParsedFnDef {
             code,
         })
     }
-}
-
-fn split_self(
-    x: Punctuated<ParsedFnDef, Token![,]>,
-) -> (
-    Punctuated<ParsedFnDef, Token![,]>,
-    Punctuated<ParsedFnDef, Token![,]>,
-) {
-    x.into_iter().partition(|x| x.this.is_some())
 }
 
 fn gen_fn_decls<T: IntoIterator<Item = ParsedFnDef>>(fns: T, name: &Ident) -> Result<Tok2> {
@@ -334,12 +332,6 @@ fn gen_trait_fn_decls<T: IntoIterator<Item = ParsedFnDef>>(
                     ..
                 },
             )| {
-                if this.is_none() {
-                    return Err(Error::new(
-                        paren.span,
-                        "This declaration requires a `self`-style parameter.",
-                    ));
-                }
                 let ret = match ret {
                     ReturnType::Type(_, ty) => *ty.clone(),
                     ReturnType::Default => Type::Tuple(TypeTuple {
@@ -363,8 +355,11 @@ fn gen_trait_fn_decls<T: IntoIterator<Item = ParsedFnDef>>(
                     &format!("{}Trait{}", struct_name, index),
                     struct_name.span(),
                 );
+                let sized_requirement = if ThisDef::is_sized_dependent(&this) {
+                    quote!(Sized)
+                } else { quote!() };
                 Ok(quote!(
-                    #vis trait #trait_name {
+                    #vis trait #trait_name: #sized_requirement {
                         fn #name#gen(#this#(#trait_params),*) -> #ret #w_clause;
                     }
                     impl #trait_name for #struct_name {
@@ -461,40 +456,5 @@ pub fn overloadable_member(input: TokenStream) -> TokenStream {
         fns,
         ..
     } = parse_macro_input!(input as OverloadableAssociated);
-    let struct_name = &struct_name;
-    let name = &name;
-    let (with_self, without_self) = split_self(fns);
-    let without_self_impl = if without_self.len() > 0 {
-        let hidden_name = Ident::new(&format!("{}HiddenStruct", struct_name), struct_name.span());
-        let fn_impls: Tok2 = gen_fn_decls(without_self, &hidden_name).unwrap();
-        let trait_name = Ident::new(&format!("ImplNonSelf{}", struct_name), struct_name.span());
-        let struct_def = quote! {
-                #[allow(dead_code)]
-                #[allow(non_camel_case_types)]
-                #vis struct #hidden_name;
-                #fn_impls
-        };
-        let trait_def = quote_spanned!(name.span() =>
-            #vis trait #trait_name {
-                #[allow(non_upper_case_globals)]
-                const #name: #hidden_name = #hidden_name;
-            }
-            impl #trait_name for #struct_name {}
-        );
-        quote!(
-            #struct_def #trait_def
-        )
-    } else {
-        quote!()
-    };
-    let with_self_impl = if with_self.len() > 0 {
-        gen_trait_fn_decls(with_self, name, struct_name, &vis).unwrap()
-    } else {
-        quote!()
-    };
-    let expanded = quote! {
-        #without_self_impl
-        #with_self_impl
-    };
-    TokenStream::from(expanded)
+    TokenStream::from(gen_trait_fn_decls(fns, &name, &struct_name, &vis).unwrap())
 }
